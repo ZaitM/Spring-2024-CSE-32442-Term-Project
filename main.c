@@ -47,16 +47,6 @@
 #include "uart0.h"
 #include "tm4c123gh6pm.h"
 
-// Port F bitband aliases
-#define RED_LED (*((volatile uint32_t *)(0x42000000 + (0x400253FC - 0x40000000) * 32 + 1 * 4)))
-#define BLUE_LED (*((volatile uint32_t *)(0x42000000 + (0x400253FC - 0x40000000) * 32 + 2 * 4)))
-#define GREEN_LED (*((volatile uint32_t *)(0x42000000 + (0x400253FC - 0x40000000) * 32 + 3 * 4)))
-
-// PortF masks
-#define RED_LED_MASK 2
-#define BLUE_LED_MASK 4
-#define GREEN_LED_MASK 8
-
 // Port B masks
 #define M0PWM2_MASK 16
 #define M0PWM3_MASK 32
@@ -71,13 +61,21 @@
 // Port D masks
 #define DRV_SLEEP_MASK 64
 
-// Port E bitband aliases
+// Port D bitband aliases
 #define DRV_SLEEP (*((volatile uint32_t *)(0x42000000 + (0x400243FC - 0x40000000) * 32 + 0 * 4)))
 
 // Port E masks
 #define PHOTO_TR_MASK_2 1
 
+// Port F bitband aliases
+#define RED_LED (*((volatile uint32_t *)(0x42000000 + (0x400253FC - 0x40000000) * 32 + 1 * 4)))
+#define BLUE_LED (*((volatile uint32_t *)(0x42000000 + (0x400253FC - 0x40000000) * 32 + 2 * 4)))
+#define GREEN_LED (*((volatile uint32_t *)(0x42000000 + (0x400253FC - 0x40000000) * 32 + 3 * 4)))
 
+// Port F masks
+#define RED_LED_MASK 2
+#define BLUE_LED_MASK 4
+#define GREEN_LED_MASK 8
 
 // Maximum number of chars that can be accepted from the user
 // and the structure for holding UI info
@@ -97,6 +95,7 @@ typedef struct _USER_DATA
 //-----------------------------------------------------------------------------
 
 void initPWM(void);
+void initDRVSleep(void);
 void initLEDs(void);
 void initEdgeTrigInputs(void);
 
@@ -105,16 +104,24 @@ void initHw()
 {
     // Initialize system clock to 40 MHz
     initSystemClockTo40Mhz();
-
+    /*
+        Summary of ports
+        Port B: M0PWM0, M0PWM1, M0PWM2, M0PWM3
+        Port C: Photo-transistor
+        Port D: DRV8833 Sleep
+        Port E: Photo-transistor
+        Port F: Red, Blue, Green LED
+    */
     // Enable clocks
-    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R5 | SYSCTL_RCGCGPIO_R2 | SYSCTL_RCGCGPIO_R1;
+    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R5 | SYSCTL_RCGCGPIO_R4 | SYSCTL_RCGCGPIO_R3 | SYSCTL_RCGCGPIO_R2 | SYSCTL_RCGCGPIO_R1;
     // Enable clock for Module 0 PWM
     SYSCTL_RCGCPWM_R |= SYSCTL_RCGCPWM_R0;
     // Enable clock for timer
-    SYSCTL_RCGCTIMER_R |= SYSCTL_RCGCTIMER_R5;
+    SYSCTL_RCGCTIMER_R |= SYSCTL_RCGCTIMER_R5 | SYSCTL_RCGCTIMER_R4;
     _delay_cycles(3);
 
     initPWM();
+    initDRVSleep();
     initLEDs();
     initEdgeTrigInputs();
 }
@@ -170,16 +177,21 @@ void initPWM(void)
     PWM0_ENABLE_R = PWM_ENABLE_PWM2EN | PWM_ENABLE_PWM3EN;
 }
 
+void initDRVSleep(void)
+{
+    // Configure DRV8833 Sleep
+    GPIO_PORTD_DIR_R |= DRV_SLEEP_MASK;  // bits 6 is an output
+    GPIO_PORTD_DR2R_R |= DRV_SLEEP_MASK; // set drive strength to 2mA (not needed since default configuration -- for clarity)
+    GPIO_PORTD_DEN_R |= DRV_SLEEP_MASK;  // enable LEDs
+    DRV_SLEEP = 1;                       // Turn off DRV8833 by default. Active low. 1 = off, 0 = on
+}
+
 void initLEDs(void)
 {
     // Configure LED pins
     GPIO_PORTF_DIR_R |= GREEN_LED_MASK | RED_LED_MASK | BLUE_LED_MASK;  // bits 1 and 3 are outputs
     GPIO_PORTF_DR2R_R |= GREEN_LED_MASK | RED_LED_MASK | BLUE_LED_MASK; // set drive strength to 2mA (not needed since default configuration -- for clarity)
     GPIO_PORTF_DEN_R |= GREEN_LED_MASK | RED_LED_MASK | BLUE_LED_MASK;  // enable LEDs
-
-    // Configure Photo Transistor to be an input
-    GPIO_PORTC_DIR_R &= ~(PHOTO_TR_MASK | PHOTO_TR_MASK_2);
-    GPIO_PORTC_DEN_R |= (PHOTO_TR_MASK | PHOTO_TR_MASK_2);
 }
 
 void initEdgeTrigInputs(void)
@@ -187,15 +199,32 @@ void initEdgeTrigInputs(void)
     /* For edge-triggered interrupts, software must clear the interrupt to enable any further
        interrupts.
     */
-    // Configure edge-triggered interrupt for PC4 and PC5
-    GPIO_PORTC_IM_R &= ~(PHOTO_TR_MASK | PHOTO_TR_MASK_2); // Mask by clearing IME field. Interrupt Disabled
-    GPIO_PORTC_IS_R &= ~(PHOTO_TR_MASK | PHOTO_TR_MASK_2); // Clear bit/pin 4 in order to detect edges
-    GPIO_PORTC_IBE_R &= ~(PHOTO_TR_MASK | PHOTO_TR_MASK_2);
-    GPIO_PORTC_IEV_R &= ~(PHOTO_TR_MASK | PHOTO_TR_MASK_2); // Clear bit/pin 4 to detect falling edges
-    GPIO_PORTC_ICR_R |= (PHOTO_TR_MASK | PHOTO_TR_MASK_2);  // Setting clears bit in RIS and MIS
-    GPIO_PORTC_IM_R |= (PHOTO_TR_MASK | PHOTO_TR_MASK_2);   // Interrupt Enabled. Setting a bit int passes to controller
+    // Configure PC4 to be an input
+    GPIO_PORTC_DIR_R &= ~(PHOTO_TR_MASK);
+    GPIO_PORTC_DEN_R |= (PHOTO_TR_MASK);
+    // Configure edge-triggered interrupt input for PC4
+    GPIO_PORTC_IM_R &= ~(PHOTO_TR_MASK); // Mask by clearing IME field. Interrupt Disabled
+    GPIO_PORTC_IS_R &= ~(PHOTO_TR_MASK); // Clear bit/pin 4 in order to detect edges
+    GPIO_PORTC_IBE_R &= ~(PHOTO_TR_MASK);
+    GPIO_PORTC_IEV_R &= ~(PHOTO_TR_MASK); // Clear bit/pin 4 to detect falling edges
+    GPIO_PORTC_ICR_R |= (PHOTO_TR_MASK);  // Setting clears bit in RIS and MIS
+    GPIO_PORTC_IM_R |= (PHOTO_TR_MASK);   // Interrupt Enabled. Setting a bit int passes to controller
 
     NVIC_EN0_R = 1 << (INT_GPIOC - 16);
+
+    // Configure PE0 to be an input
+    GPIO_PORTE_DIR_R &= ~(PHOTO_TR_MASK_2);
+    GPIO_PORTE_DEN_R |= (PHOTO_TR_MASK_2);
+
+    // Configure edge-triggered interrupt input for PE0
+    GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
+    GPIO_PORTE_IS_R &= ~PHOTO_TR_MASK_2; // Clear bit/pin 0 in order to detect edges
+    GPIO_PORTE_IBE_R &= ~PHOTO_TR_MASK_2;
+    GPIO_PORTE_IEV_R &= ~PHOTO_TR_MASK_2; // Clear bit/pin 0 to detect falling edges
+    GPIO_PORTE_ICR_R |= PHOTO_TR_MASK_2;  // Setting clears bit in RIS and MIS
+    GPIO_PORTE_IM_R |= PHOTO_TR_MASK_2;   // Interrupt Enabled. Setting a bit int passes to controller
+
+    NVIC_EN0_R = 1 << (INT_GPIOE - 16);
 
     // 25 ms one-shot timer configuration for PC4
     TIMER5_CTL_R &= ~TIMER_CTL_TAEN;
@@ -205,7 +234,7 @@ void initEdgeTrigInputs(void)
     TIMER5_IMR_R = TIMER_IMR_TATOIM;
     NVIC_EN2_R = 1 << (INT_TIMER5A - 16 - 64);
 
-    // 25 ms one-shot timer configuration for PC5
+    // 25 ms one-shot timer configuration for PE0
     TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
     TIMER4_CFG_R |= TIMER_CFG_32_BIT_TIMER;
     TIMER4_TAMR_R |= TIMER_TAMR_TACDIR | TIMER_TAMR_TAMR_1_SHOT;
@@ -219,7 +248,7 @@ void photoISR(void)
     if (GPIO_PORTC_RIS_R & PHOTO_TR_MASK)
     {
         GREEN_LED ^= 1;
-        GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK; // Interrupt Disabled Mask by clearing IME field. 
+        GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK; // Interrupt Disabled Mask by clearing IME field.
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
         TIMER5_CTL_R |= TIMER_CTL_TAEN;    // Enable timer
@@ -229,14 +258,14 @@ void photoISR(void)
 
 void photoISR2(void)
 {
-    if (GPIO_PORTC_RIS_R & PHOTO_TR_MASK_2)
+    if (GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2)
     {
         BLUE_LED ^= 1;
-        GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
+        GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
-        TIMER4_CTL_R |= TIMER_CTL_TAEN;    // Enable timer
-        GPIO_PORTC_ICR_R |= PHOTO_TR_MASK_2; // Clearing interrupt
+        TIMER4_CTL_R |= TIMER_CTL_TAEN;      // Enable timer
+        GPIO_PORTE_ICR_R |= PHOTO_TR_MASK_2; // Clearing interrupt
     }
 }
 
@@ -244,16 +273,16 @@ void oneShotISR(void)
 {
     GPIO_PORTC_ICR_R |= PHOTO_TR_MASK; // Clearing interrupt
     GPIO_PORTC_IM_R |= PHOTO_TR_MASK;  // Interrupt Enabled. Setting a bit int passes to controller
-    TIMER5_ICR_R = TIMER_ICR_TATOCINT;
+    TIMER5_ICR_R = TIMER_ICR_TATOCINT; // Clearing one-shot timer interrupt
 
     /* 3/17/24 Have to turn on (reenable) edge trigger input by the IM register */
 }
 
 void oneShotISR2(void)
 {
-    GPIO_PORTC_ICR_R |= PHOTO_TR_MASK_2; // Clearing interrupt
-    GPIO_PORTC_IM_R |= PHOTO_TR_MASK_2;  // Interrupt Enabled. Setting a bit int passes to controller
-    TIMER4_ICR_R = TIMER_ICR_TATOCINT;
+    GPIO_PORTE_ICR_R |= PHOTO_TR_MASK_2; // Clearing interrupt
+    GPIO_PORTE_IM_R |= PHOTO_TR_MASK_2;  // Interrupt Enabled. Setting a bit int passes to controller
+    TIMER4_ICR_R = TIMER_ICR_TATOCINT;   // Clearing one-shot timer interrupt
 }
 
 void getsUart0(USER_DATA *dataStruct)
@@ -472,26 +501,26 @@ int main(void)
     // Initialize hardware
     initHw();
 
-    while (true)
-        // {
-        //     for (j = 0; j < 2048; j++)
-        //     {
-        //         RED_LED ^= 1;
-        //         for (i = 0; i < j; i++)
-        //         {
-        //             setValues(j, j, i);
+    // while (true)
+    // {
+    //     for (j = 0; j < 2048; j++)
+    //     {
+    //         RED_LED ^= 1;
+    //         for (i = 0; i < j; i++)
+    //         {
+    //             setValues(j, j, i);
 
-        //             // Wait 2 seconds
-        //             waitMicrosecond(100000);
-        //         }
+    //             // Wait 2 seconds
+    //             waitMicrosecond(100000);
+    //         }
 
-        //         //            setValues(i, 1023);
-        //         //
-        //         //            waitMicrosecond(1000000);
-        //     }
-        // }
+    //         //            setValues(i, 1023);
+    //         //
+    //         //            waitMicrosecond(1000000);
+    //     }
+    // }
 
-        initUart0();
+    initUart0();
 
     // Setup UART0 baud rate
     setUart0BaudRate(19200, 40e6);
@@ -548,7 +577,7 @@ int main(void)
             setGen1Values(1024, , );
         }
 
-        // Add a command 'stop' 0% duty cycle 
+        // Add a command 'stop' 0% duty cycle
         if (isCommand(&data, "stop", 0))
         {
             foo = true;
@@ -573,10 +602,16 @@ int main(void)
             setGen0Values(1024, , );
             setGen1Values(1024, , );
         }
-        if (!foo)
-            putsUart0("Invalid command!\n\n");
-        else
-            putsUart0("Valid command!\n\n");
+        // Command 'DRV' to turn off/on the DRV8833
+        if (isCommand(&data, "DRV", 1))
+        {
+            foo = true;
+            val1 = getFieldInteger(&data, 1);
+            val1 == 0 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
+            DRV_SLEEP = val1;
+        }
+
+        foo ? putsUart0("Valid command!\n\n") : putsUart0("Invalid command!\n\n");
         putsUart0("********************");
 
         // TODO: Ensure consistency with uppercase and lower case commands
