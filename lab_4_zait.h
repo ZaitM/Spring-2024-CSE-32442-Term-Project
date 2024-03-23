@@ -1,19 +1,21 @@
 #ifndef LAB_4_ZAIT_H
 #define LAB_4_ZAIT_H
 #include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
+
+// Maximum number of chars that can be accepted from the user
+// and the structure for holding UI info
+#define MAX_CHARS 80
+#define MAX_FIELDS 5
 
 typedef struct _USER_DATA
 {
-    char input[80];
-    uint8_t count;
-    uint8_t length;
-    uint8_t field_count;
-    uint8_t field_position[10];
-    uint8_t field_length[10];
+    char buffer[MAX_CHARS + 1];
+    uint8_t fieldCount;
+    uint8_t fieldPosition[MAX_FIELDS];
+    uint8_t fieldType[MAX_FIELDS];
 } USER_DATA;
 
+void getsUart0(USER_DATA *dataStruct);
 /**
  * @brief Clear the struct members
  *
@@ -21,7 +23,6 @@ typedef struct _USER_DATA
  */
 void clearStruct(USER_DATA *dataStruct);
 void parseFields(USER_DATA *dataStruct);
-void getsUart0(USER_DATA *dataStruct);
 
 /**
  * @brief Detects wether it is alphabetic and returns a boolean
