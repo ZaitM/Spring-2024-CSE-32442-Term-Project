@@ -55,11 +55,13 @@ extern uint32_t __STACK_TOP;
 //
 //*****************************************************************************
 // To be added by user
-extern void photoISR(void);
-extern void photoISR2(void);
-
+extern void rightWheelEdgeISR(void);
+extern void leftWheelEdgeISR(void);
+extern void wideTimer0ISR(void);
 extern void oneShotISR(void);
 extern void oneShotISR2(void);
+
+// extern void timer3ISR(void);
 
 //*****************************************************************************
 //
@@ -90,9 +92,9 @@ void (* const g_pfnVectors[])(void) =
     IntDefaultHandler,                      // The SysTick handler
     IntDefaultHandler,                      // GPIO Port A
     IntDefaultHandler,                      // GPIO Port B
-    photoISR,                      // GPIO Port C
+    rightWheelEdgeISR,                      // GPIO Port C
     IntDefaultHandler,                      // GPIO Port D
-    photoISR2,                      // GPIO Port E
+    leftWheelEdgeISR,                      // GPIO Port E
     IntDefaultHandler,                      // UART0 Rx and Tx
     IntDefaultHandler,                      // UART1 Rx and Tx
     IntDefaultHandler,                      // SSI0 Rx and Tx
@@ -182,7 +184,7 @@ void (* const g_pfnVectors[])(void) =
     0,                                      // Reserved
     oneShotISR,                      // Timer 5 subtimer A
     IntDefaultHandler,                      // Timer 5 subtimer B
-    IntDefaultHandler,                      // Wide Timer 0 subtimer A
+    wideTimer0ISR,                      // Wide Timer 0 subtimer A
     IntDefaultHandler,                      // Wide Timer 0 subtimer B
     IntDefaultHandler,                      // Wide Timer 1 subtimer A
     IntDefaultHandler,                      // Wide Timer 1 subtimer B
