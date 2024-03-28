@@ -187,7 +187,7 @@ void (* const g_pfnVectors[])(void) =
     0,                                      // Reserved
     oneShotISR,                      // Timer 5 subtimer A
     IntDefaultHandler,                      // Timer 5 subtimer B
-    wideTimer0ISR,                      // Wide Timer 0 subtimer A
+    IntDefaultHandler,                      // Wide Timer 0 subtimer A
     IntDefaultHandler,                      // Wide Timer 0 subtimer B
     IntDefaultHandler,                      // Wide Timer 1 subtimer A
     IntDefaultHandler,                      // Wide Timer 1 subtimer B
