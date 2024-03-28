@@ -102,8 +102,7 @@ char *getFieldString(USER_DATA *dataStruct, uint8_t fieldNumber)
     return fieldNumber < dataStruct->fieldCount ? &dataStruct->buffer[dataStruct->fieldPosition[fieldNumber]] : NULL;
 }
 
-
-int32_t atoi(char *str)
+int32_t atoi(const char *str)
 {
     uint8_t i = str[0] == 45 ? 1 : 0;
     int32_t value = 0;
@@ -123,13 +122,19 @@ int32_t getFieldInteger(USER_DATA *dataStruct, uint8_t fieldNumber)
 bool isCommand(USER_DATA *dataStruct, const char command[], uint8_t minArgs)
 {
     uint8_t i = 0;
+
+    // Find the size of the command
+    uint8_t size = 0;
+    while (command[size] != 0)
+        size++;
+
     for (i = 0; dataStruct->buffer[i] != 0; i++)
     {
         // If command field does not match command parameter return false
         if (dataStruct->buffer[i] != command[i])
             return false;
     }
-    return ((dataStruct->fieldCount - 1) >= minArgs) ? true : false;
+    return ((dataStruct->fieldCount - 1) >= minArgs) && (size ==  i)? true : false;
 }
 
 bool strCmp(const char str1[], const char str2[])
