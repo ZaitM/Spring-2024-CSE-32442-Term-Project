@@ -364,7 +364,7 @@ int main(void)
 
     // Setup UART0 baud rate
     setUart0BaudRate(19200, 40e6);
-    uint8_t speed = 0;
+    uint16_t speed = 0, DRV_Val = 0;
 
     while (true)
     {
@@ -400,9 +400,9 @@ int main(void)
 #endif DEBUG
 
         // Validate command and minimum num of args provide by user
-        // Add a command 'foward' 100% duty cycle
+        // Add a command 'forward' 100% duty cycle
         // if no 'speed' is provided, then the default values are used
-        if (isCommand(&data, "forward", 1) | isCommand(&data, "foward", 0))
+        if (isCommand(&data, "forward", 1) | isCommand(&data, "forward", 0))
         {
             foo = true;
             speed = (data.fieldCount == 2) ? getFieldInteger(&data, 1) : 1023;
@@ -411,7 +411,7 @@ int main(void)
         }
 
         // Add a  command 'reverse' 100% duty cycle
-        else if (isCommand(&data, "r", 1))
+        else if (isCommand(&data, "r", 1) | isCommand(&data, "reverse", 0))
         {
             foo = true;
             speed = (data.fieldCount == 2) ? getFieldInteger(&data, 1) : 1023;
@@ -447,9 +447,9 @@ int main(void)
         else if (isCommand(&data, "drv", 1))
         {
             foo = true;
-            val1 = getFieldInteger(&data, 1);
-            val1 == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
-            DRV_SLEEP = val1;
+            DRV_Val = getFieldInteger(&data, 1);
+            DRV_Val == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
+            DRV_SLEEP = DRV_Val;
         }
 
         foo ? putsUart0("Valid command!\n\n") : putsUart0("Invalid command!\n\n");
