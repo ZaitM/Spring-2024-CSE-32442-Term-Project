@@ -48,6 +48,11 @@
 #include "tm4c123gh6pm.h"
 #include "lab_4_zait.h"
 
+volatile uint64_t leftWheelCount = 0, rightWheelCount = 0;
+char str[40];
+#define L_WHEEL_CIRCUMFERENCE 90 // 90.20 mm
+#define R_WHEEL_CIRCUMFERENCE 91 // 90.75 mm
+
 // Port B masks
 #define M0PWM2_MASK 16
 #define M0PWM3_MASK 32
@@ -78,13 +83,6 @@
 #define BLUE_LED_MASK 4
 #define GREEN_LED_MASK 8
 
-// Maximum number of chars that can be accepted from the user
-// and the structure for holding UI info
-#define MAX_CHARS 80
-#define MAX_FIELDS 5
-
-
-
 //-----------------------------------------------------------------------------
 // Subroutines
 //-----------------------------------------------------------------------------
@@ -93,6 +91,9 @@ void initPWM(void);
 void initDRVSleep(void);
 void initLEDs(void);
 void initEdgeTrigInputs(void);
+void setGen0Values(uint16_t frequency, uint16_t x, uint16_t y);
+void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y);
+void speedToPWM(uint32_t speed);
 
 // Initialize Hardware
 void initHw()
@@ -108,12 +109,15 @@ void initHw()
         Port E: Photo-transistor
         Port F: Red, Blue, Green LED
     */
+
     // Enable clocks
     SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R5 | SYSCTL_RCGCGPIO_R4 | SYSCTL_RCGCGPIO_R3 | SYSCTL_RCGCGPIO_R2 | SYSCTL_RCGCGPIO_R1;
     // Enable clock for Module 0 PWM
     SYSCTL_RCGCPWM_R |= SYSCTL_RCGCPWM_R0;
-    // Enable clock for timer
+    // Enable clock for Timer
     SYSCTL_RCGCTIMER_R |= SYSCTL_RCGCTIMER_R5 | SYSCTL_RCGCTIMER_R4 | SYSCTL_RCGCTIMER_R3 | SYSCTL_RCGCTIMER_R2;
+    // Enable clock for Wide Timer 0
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0;
     _delay_cycles(3);
 }
 
@@ -199,10 +203,13 @@ void initEdgeTrigInputs(void)
     // Configure edge-triggered interrupt input for PC4
     GPIO_PORTC_IM_R &= ~(PHOTO_TR_MASK); // Mask by clearing IME field. Interrupt Disabled
     GPIO_PORTC_IS_R &= ~(PHOTO_TR_MASK); // Clear bit/pin 4 in order to detect edges
-    GPIO_PORTC_IBE_R &= ~(PHOTO_TR_MASK);
-    GPIO_PORTC_IEV_R &= ~(PHOTO_TR_MASK); // Clear bit/pin 4 to detect falling edges
-    GPIO_PORTC_ICR_R |= (PHOTO_TR_MASK);  // Setting clears bit in RIS and MIS
-    GPIO_PORTC_IM_R |= (PHOTO_TR_MASK);   // Interrupt Enabled. Setting a bit int passes to controller
+    GPIO_PORTC_IBE_R |= (PHOTO_TR_MASK); // Detect both edges
+    // GPIO_PORTC_IEV_R &= ~(PHOTO_TR_MASK);  // Clear bit/pin 4 to detect falling edges
+    GPIO_PORTC_ICR_R |= (PHOTO_TR_MASK);   // Setting clears bit in RIS and MIS
+    GPIO_PORTC_IM_R |= (PHOTO_TR_MASK);    // Interrupt Enabled. Setting a bit int passes to controller
+    GPIO_PORTC_AFSEL_R |= PHOTO_TR_MASK;   // Enable alternate function
+    GPIO_PORTC_PCTL_R &= ~GPIO_PCTL_PC4_M; // Clear bit/pin 4
+    GPIO_PORTC_PCTL_R |= GPIO_PCTL_PC4_WT0CCP0;
 
     NVIC_EN0_R = 1 << (INT_GPIOC - 16);
 
@@ -213,10 +220,10 @@ void initEdgeTrigInputs(void)
     // Configure edge-triggered interrupt input for PE0
     GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
     GPIO_PORTE_IS_R &= ~PHOTO_TR_MASK_2; // Clear bit/pin 0 in order to detect edges
-    GPIO_PORTE_IBE_R &= ~PHOTO_TR_MASK_2;
-    GPIO_PORTE_IEV_R &= ~PHOTO_TR_MASK_2; // Clear bit/pin 0 to detect falling edges
-    GPIO_PORTE_ICR_R |= PHOTO_TR_MASK_2;  // Setting clears bit in RIS and MIS
-    GPIO_PORTE_IM_R |= PHOTO_TR_MASK_2;   // Interrupt Enabled. Setting a bit int passes to controller
+    GPIO_PORTE_IBE_R |= PHOTO_TR_MASK_2;
+    // GPIO_PORTE_IEV_R &= ~PHOTO_TR_MASK_2; // Clear bit/pin 0 to detect falling edges
+    GPIO_PORTE_ICR_R |= PHOTO_TR_MASK_2; // Setting clears bit in RIS and MIS
+    GPIO_PORTE_IM_R |= PHOTO_TR_MASK_2;  // Interrupt Enabled. Setting a bit int passes to controller
 
     NVIC_EN0_R = 1 << (INT_GPIOE - 16);
 
@@ -232,17 +239,19 @@ void initEdgeTrigInputs(void)
     // There are 20 holes in wheel
     // Will use this to determine speed of wheel
     // Will determine the number of clock cycles for wheel to make a full rotation
-    TIMER3_CTL_R &= ~TIMER_CTL_TAEN;
-    TIMER3_CTL_R |= TIMER_CTL_TAEVENT_NEG; // Capture on falling edge
-    TIMER3_CFG_R |= TIMER_CFG_32_BIT_TIMER;
-    TIMER3_TAMR_R |= TIMER_TAMR_TAMR_CAP; // Set to capture mode
-    TIMER3_TAMR_R &= ~TIMER_TAMR_TACMR;   // Edge-Count mode
-    TIMER3_TAMR_R |= TIMER_TAMR_TACDIR;   // Count up
-    // TIMER3_TAILR_R = 20;                  // Sets the upper bound for the timeout event  
     // GPTMTnMATCHR interrupt is generated when the timer value is equal to the value in this register
-    TIMER3_TAMATCHR_R = 20;
-    TIMER3_IMR_R = TIMER_IMR_CAMIM; // Enable timeout interrupt
-    NVIC_EN1_R = 1 << (INT_TIMER3A - 16 - 32);
+    TIMER3_CTL_R &= ~TIMER_CTL_TAEN;       // Turn-off counter before reconfiguring
+    TIMER3_CFG_R = TIMER_CFG_32_BIT_TIMER; // configure as 32-bit timer
+    TIMER3_TAMR_R |= TIMER_TAMR_TACDIR | TIMER_TAMR_TAMR_1_SHOT;
+
+    WTIMER0_CTL_R &= ~TIMER_CTL_TAEN;                          // Turn-off counter before reconfiguring
+    WTIMER0_CFG_R = 4;                                         // configure as 32-bit counter (A only)
+    WTIMER0_TAMR_R |= TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACDIR; // configure for edge count mode, count up
+    WTIMER0_CTL_R |= TIMER_CTL_TAEVENT_BOTH;                   // count both edges
+    WTIMER0_IMR_R |= TIMER_IMR_CAMIM;                          // Capture mode match interrupt
+    WTIMER0_TAMATCHR_R = 39;                                   // Sets the upper bound for the timeout event
+    WTIMER0_TAV_R = 0;                                         // zero counter for first period
+    NVIC_EN2_R = 1 << (INT_WTIMER0A - 16 - 64);                // turn-on interrupt 94 (WTIMER0A)
 
     // 25 ms one-shot timer configuration for PE0
     TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
@@ -253,40 +262,46 @@ void initEdgeTrigInputs(void)
     NVIC_EN2_R = 1 << (INT_TIMER4A - 16 - 64);
 }
 
-volatile uint32_t startTime = 0, endTime = 0;
-volatile bool rotationComplete = false;
-
-void photoISR(void)
+// PC4 Right wheel ISR
+void rightWheelEdgeISR(void)
 {
+    leftWheelCount++;
+    if (leftWheelCount == 40)
+    {
+        leftWheelCount = 0;
+        GREEN_LED ^= 1;
+    }
     if (GPIO_PORTC_RIS_R & PHOTO_TR_MASK)
     {
-        GREEN_LED ^= 1;
+        // GREEN_LED ^= 1;
         GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK; // Interrupt Disabled Mask by clearing IME field.
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
-        TIMER5_CTL_R |= TIMER_CTL_TAEN;    // Enable timer
+        TIMER5_CTL_R |= TIMER_CTL_TAEN;    // Enable 25 ms one-shot timer
+        WTIMER0_CTL_R |= TIMER_CTL_TAEN;   // turn-on edge counter PC4
+        TIMER3_CTL_R |= TIMER_CTL_TAEN;    // Enable timer 3 for one revolution
         GPIO_PORTC_ICR_R |= PHOTO_TR_MASK; // Clearing interrupt
     }
 }
 
-void timer3ISR(void)
+void wideTimer0ISR(void)
 {
-    if(     )
     RED_LED ^= 1;
-    if(startTime == 0)
-    {
-        startTime = TIMER3_TAV_R;
-    }
-    else
-    {
-        endTime = TIMER3_TAV_R;
-        rotationComplete = true;
-        TIMER3_ICR_R = TIMER_ICR_CAMCINT;
-        TIMER3_CTL_R &= ~TIMER_CTL_TAEN;
-    }
+    uint32_t time = TIMER3_TAV_R;
+    snprintf(str, sizeof(str), "Timer 3: %d\n", time);
+    putsUart0(str);
+
+    WTIMER0_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
+    WTIMER0_TAV_R = 0;
+
+    TIMER3_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
+    TIMER3_TAV_R = 0;
+
+    WTIMER0_ICR_R = TIMER_ICR_CAMCINT; // Clearing one-shot timer interrupt
 }
 
-void photoISR2(void)
+// PE0 Left wheel ISR
+void leftWheelEdgeISR(void)
 {
     if (GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2)
     {
@@ -294,8 +309,7 @@ void photoISR2(void)
         GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
-        TIMER4_CTL_R |= TIMER_CTL_TAEN;      // Enable timer
-        TIMER3_CTL_R |= TIMER_CTL_TAEN;    // Enable timer 3 for edge count and capture mode
+        TIMER4_CTL_R |= TIMER_CTL_TAEN; // Enable timer
 
         GPIO_PORTE_ICR_R |= PHOTO_TR_MASK_2; // Clearing interrupt
     }
@@ -336,7 +350,7 @@ void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y)
 //-----------------------------------------------------------------------------
 
 int main(void)
- {
+{
     USER_DATA data;
     data.fieldCount = 0;
 
@@ -350,11 +364,12 @@ int main(void)
 
     // Setup UART0 baud rate
     setUart0BaudRate(19200, 40e6);
-    int32_t val1 = 0;
+    uint8_t speed = 0;
 
     while (true)
     {
         bool foo = 0;
+
         putsUart0("********************\n\n");
         putsUart0("Input:\n");
 
@@ -386,23 +401,26 @@ int main(void)
 
         // Validate command and minimum num of args provide by user
         // Add a command 'foward' 100% duty cycle
-        if (isCommand(&data, "foward", 0))
+        // if no 'speed' is provided, then the default values are used
+        if (isCommand(&data, "forward", 1) | isCommand(&data, "foward", 0))
         {
             foo = true;
-            // setGen0Values(1024, 1023, 0);
-            setGen1Values(1024, 0, 1023);
+            speed = (data.fieldCount == 2) ? getFieldInteger(&data, 1) : 1023;
+            setGen0Values(1024, 0, speed);
+            setGen1Values(1024, speed, 0);
         }
 
         // Add a  command 'reverse' 100% duty cycle
-        if (isCommand(&data, "reverse", 0))
+        else if (isCommand(&data, "r", 1))
         {
             foo = true;
-            setGen0Values(1024, 0, 1023);
-            setGen1Values(1024, 1023, 0);
+            speed = (data.fieldCount == 2) ? getFieldInteger(&data, 1) : 1023;
+            setGen0Values(1024, speed, 0);
+            setGen1Values(1024, 0, speed);
         }
 
         // Add a command 'stop' 0% duty cycle
-        if (isCommand(&data, "stop", 0))
+        else if (isCommand(&data, "s", 0))
         {
             foo = true;
             setGen0Values(1024, 0, 0);
@@ -410,23 +428,23 @@ int main(void)
         }
 
         // Add a command 'ccw' 100% duty cycle
-        if (isCommand(&data, "ccw", 0))
-        {
-            foo = true;
-            setGen0Values(1024, 0, 1023);
-            setGen1Values(1024, 0, 1023);
-        }
-
-        // Add a command 'cw' 100% duty cycle
-        if (isCommand(&data, "cw", 0))
+        else if (isCommand(&data, "ccw", 0))
         {
             foo = true;
             setGen0Values(1024, 1023, 0);
             setGen1Values(1024, 1023, 0);
         }
 
+        // Add a command 'cw' 100% duty cycle
+        else if (isCommand(&data, "cw", 0))
+        {
+            foo = true;
+            setGen0Values(1024, 0, 1023);
+            setGen1Values(1024, 0, 1023);
+        }
+
         // Command 'DRV' to turn off/on the DRV8833
-        if (isCommand(&data, "drv", 1))
+        else if (isCommand(&data, "drv", 1))
         {
             foo = true;
             val1 = getFieldInteger(&data, 1);
@@ -434,23 +452,6 @@ int main(void)
             DRV_SLEEP = val1;
         }
 
-        if (isCommand(&data, "freq", 1))
-        {
-            foo = true;
-            val1 = getFieldInteger(&data, 1);
-            // Currently only adjusts for 'forward' command
-            setGen0Values(val1, val1 - 1, 0);
-            setGen1Values(val1, 0, val1 - 1);
-        }
-        if(rotationComplete)
-        {
-            rotationComplete = false;
-            uint32_t time = endTime - startTime;
-            snprintf(data.buffer, MAX_CHARS, "Time: %d\n", time);
-            putsUart0(data.buffer);
-            startTime = 0;
-            endTime = 0;
-        }
         foo ? putsUart0("Valid command!\n\n") : putsUart0("Invalid command!\n\n");
         putsUart0("********************");
 
