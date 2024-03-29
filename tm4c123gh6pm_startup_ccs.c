@@ -63,7 +63,7 @@ extern void leftWheelEdgeISR(void);
 extern void oneShotISR(void);
 extern void oneShotISR2(void);
 
-extern timer3ISR(void);
+extern void timer3ISR(void);
 
 
 //*****************************************************************************
