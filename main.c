@@ -26,8 +26,7 @@
     (M0PWM0, M0PWM1) -> (x,y)
 
     March 17th, 2024
-    M0PWM2 Port B Pin 4
-    M0PWM3 Port B Pin 5
+    M0PWM2 Port B Pin 4 M0PWM3 Port B Pin 5
     (M0PWM2, M0PWM3) -> (x,y)
 
     March 18th, 2024
@@ -48,10 +47,16 @@
 #include "tm4c123gh6pm.h"
 #include "lab_4_zait.h"
 
-volatile uint64_t leftWheelCount = 0, rightWheelCount = 0;
+// Global variables
+volatile uint16_t leftWheelCount = 0, rightWheelCount = 0;
+volatile uint16_t rightWheelGen0Val = 0, leftWheelGen1Val = 0, speed = 0;
 char str[40];
-#define L_WHEEL_CIRCUMFERENCE 90 // 90.20 mm
-#define R_WHEEL_CIRCUMFERENCE 91 // 90.75 mm
+
+// Constants
+#define L_WHEEL_DIAMETER 90           // 90.20 mm
+#define R_WHEEL_DIAMETER 91           // 90.75 mm
+#define BASE_DIAMETER 138             // 5 and 7/16 inches or 138.1 mm
+#define DISTANCE_ADJUSTMENT_FACTOR 40 // Overshoots by 80 mm
 
 // Port B masks
 #define M0PWM2_MASK 16
@@ -83,17 +88,21 @@ char str[40];
 #define BLUE_LED_MASK 4
 #define GREEN_LED_MASK 8
 
-//-----------------------------------------------------------------------------
-// Subroutines
-//-----------------------------------------------------------------------------
-
+// Function prototypes
+uint16_t speedToPWM(uint16_t speed);
 void initPWM(void);
 void initDRVSleep(void);
 void initLEDs(void);
 void initEdgeTrigInputs(void);
 void setGen0Values(uint16_t frequency, uint16_t x, uint16_t y);
 void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y);
-void speedToPWM(uint32_t speed);
+void driveStraightFoward(void);
+void driveStraightFoward2(void);
+uint16_t absoluteValue(int16_t value);
+
+//-----------------------------------------------------------------------------
+// Subroutines
+//-----------------------------------------------------------------------------
 
 // Initialize Hardware
 void initHw()
@@ -239,19 +248,21 @@ void initEdgeTrigInputs(void)
     // There are 20 holes in wheel
     // Will use this to determine speed of wheel
     // Will determine the number of clock cycles for wheel to make a full rotation
-    // GPTMTnMATCHR interrupt is generated when the timer value is equal to the value in this register
+
     TIMER3_CTL_R &= ~TIMER_CTL_TAEN;       // Turn-off counter before reconfiguring
     TIMER3_CFG_R = TIMER_CFG_32_BIT_TIMER; // configure as 32-bit timer
     TIMER3_TAMR_R |= TIMER_TAMR_TACDIR | TIMER_TAMR_TAMR_1_SHOT;
+    TIMER3_IMR_R = TIMER_IMR_TATOIM;
+    NVIC_EN1_R = 1 << (INT_TIMER3A - 16 - 32);
 
-    WTIMER0_CTL_R &= ~TIMER_CTL_TAEN;                          // Turn-off counter before reconfiguring
-    WTIMER0_CFG_R = 4;                                         // configure as 32-bit counter (A only)
-    WTIMER0_TAMR_R |= TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACDIR; // configure for edge count mode, count up
-    WTIMER0_CTL_R |= TIMER_CTL_TAEVENT_BOTH;                   // count both edges
-    WTIMER0_IMR_R |= TIMER_IMR_CAMIM;                          // Capture mode match interrupt
-    WTIMER0_TAMATCHR_R = 39;                                   // Sets the upper bound for the timeout event
-    WTIMER0_TAV_R = 0;                                         // zero counter for first period
-    NVIC_EN2_R = 1 << (INT_WTIMER0A - 16 - 64);                // turn-on interrupt 94 (WTIMER0A)
+    // WTIMER0_CTL_R &= ~TIMER_CTL_TAEN;                          // Turn-off counter before reconfiguring
+    // WTIMER0_CFG_R = 4;                                         // configure as 32-bit counter (A only)
+    // WTIMER0_TAMR_R |= TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACDIR; // configure for edge count mode, count up
+    // WTIMER0_CTL_R |= TIMER_CTL_TAEVENT_BOTH;                   // count both edges
+    // WTIMER0_IMR_R |= TIMER_IMR_CAMIM;                          // Capture mode match interrupt
+    // WTIMER0_TAMATCHR_R = 39;                                   // Sets the upper bound for the timeout event
+    // WTIMER0_TAV_R = 0;                                         // zero counter for first period
+    // NVIC_EN2_R = 1 << (INT_WTIMER0A - 16 - 64);                // turn-on interrupt 94 (WTIMER0A)
 
     // 25 ms one-shot timer configuration for PE0
     TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
@@ -265,47 +276,54 @@ void initEdgeTrigInputs(void)
 // PC4 Right wheel ISR
 void rightWheelEdgeISR(void)
 {
-    leftWheelCount++;
-    if (leftWheelCount == 40)
-    {
-        leftWheelCount = 0;
-        GREEN_LED ^= 1;
-    }
+    rightWheelCount++;
     if (GPIO_PORTC_RIS_R & PHOTO_TR_MASK)
     {
-        // GREEN_LED ^= 1;
+        GREEN_LED ^= 1;
         GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK; // Interrupt Disabled Mask by clearing IME field.
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
-        TIMER5_CTL_R |= TIMER_CTL_TAEN;    // Enable 25 ms one-shot timer
-        WTIMER0_CTL_R |= TIMER_CTL_TAEN;   // turn-on edge counter PC4
-        TIMER3_CTL_R |= TIMER_CTL_TAEN;    // Enable timer 3 for one revolution
+        TIMER5_CTL_R |= TIMER_CTL_TAEN;  // Enable 25 ms one-shot timer
+        WTIMER0_CTL_R |= TIMER_CTL_TAEN; // turn-on edge counter PC4
+        // TIMER3_CTL_R |= TIMER_CTL_TAEN;    // Enable timer 3 for one revolution
         GPIO_PORTC_ICR_R |= PHOTO_TR_MASK; // Clearing interrupt
     }
 }
 
+/*
 void wideTimer0ISR(void)
 {
-    RED_LED ^= 1;
+    // RED_LED ^= 1;
     uint32_t time = TIMER3_TAV_R;
-    snprintf(str, sizeof(str), "Timer 3: %d\n", time);
-    putsUart0(str);
+    // snprintf(str, sizeof(str), "Timer 3: %d\n", time);
+    // putsUart0(str);
 
     WTIMER0_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
     WTIMER0_TAV_R = 0;
 
-    TIMER3_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
+    // TIMER3_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
     TIMER3_TAV_R = 0;
 
     WTIMER0_ICR_R = TIMER_ICR_CAMCINT; // Clearing one-shot timer interrupt
+}
+*/
+
+void timer3ISR(void)
+{
+    TIMER3_CTL_R &= ~TIMER_CTL_TAEN;   // Disable timer
+    TIMER3_ICR_R = TIMER_ICR_TATOCINT; // Clearing one-shot timer interrupt
+    setGen0Values(1024, 0, 0);
+    setGen1Values(1024, 0, 0);
+    RED_LED ^= 1;
 }
 
 // PE0 Left wheel ISR
 void leftWheelEdgeISR(void)
 {
+    leftWheelCount++;
     if (GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2)
     {
-        // BLUE_LED ^= 1;
+        BLUE_LED ^= 1;
         GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
@@ -345,6 +363,94 @@ void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y)
     PWM0_1_CMPB_R = y;
 }
 
+uint16_t speedToPWM(uint16_t speed)
+{
+    /*
+        The max speed is 9988 mm/min
+        The lowest speed is 1624 mm/min
+        Don't worry for no speed val provided
+    */
+
+    if (speed == 0)
+        return 0;
+    else if (speed < 1624)
+        return 675;
+    else if (speed >= 1624 && speed < 1946)
+        return 690;
+    else if (speed >= 1946 && speed < 2271)
+        return 705;
+    else if (speed >= 2271 && speed < 2618)
+        return 720;
+    else if (speed >= 2618 && speed < 2926)
+        return 735;
+    else if (speed >= 2923 && speed < 3729)
+        return 770;
+    else if (speed >= 3729 && speed < 4453)
+        return 805;
+    else if (speed >= 4453 && speed < 5258)
+        return 840;
+    else if (speed >= 5258 && speed < 6105)
+        return 875;
+    else if (speed >= 6105 && speed < 6722)
+        return 900;
+    else if (speed >= 6722 && speed < 7318)
+        return 925;
+    else if (speed >= 7318 && speed < 7976)
+        return 950;
+    else if (speed >= 7976 && speed < 8648)
+        return 975;
+    else if (speed >= 8648 && speed < 9321)
+        return 1000;
+    else if (speed >= 9321 && speed < 9988)
+        return 1023;
+    else
+        return 1023;
+}
+
+void driveStraightFoward(void)
+{
+    while (!(GPIO_PORTC_RIS_R & PHOTO_TR_MASK) || !(GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2))
+    {
+        // Right-wheel GPIO interrupt
+        if (!(GPIO_PORTC_RIS_R & PHOTO_TR_MASK))
+            rightWheelGen0Val++; // Speed up right wheel
+
+        // Left-wheel GPIO interrupt
+        if (!(GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2))
+            leftWheelGen1Val++; // Speed up left wheel
+
+        setGen0Values(1024, 0, rightWheelGen0Val);
+        setGen1Values(1024, leftWheelGen1Val, 0);
+    }
+}
+
+void driveStraightFoward2(void)
+{
+    while (absoluteValue(leftWheelCount - rightWheelCount) > 1)
+    {
+        if (rightWheelCount > leftWheelCount)
+        {
+            leftWheelGen1Val = leftWheelGen1Val >= 1023 ? speedToPWM(speed) : leftWheelGen1Val + 1;
+            rightWheelGen0Val--;
+        }
+        else if (leftWheelCount > rightWheelCount)
+        {
+            rightWheelGen0Val = rightWheelGen0Val >= 1023 ? speedToPWM(speed) : rightWheelGen0Val + 1;
+            leftWheelGen1Val--;
+        }
+        setGen0Values(1024, 0, rightWheelGen0Val);
+        setGen1Values(1024, leftWheelGen1Val, 0);
+        snprintf(str, sizeof(str), "Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+        putsUart0(str);
+        waitMicrosecond(50000);
+    }
+}
+
+uint16_t absoluteValue(int16_t value)
+{
+    return value < 0 ? -value : value;
+}
+
 //-----------------------------------------------------------------------------
 // Main
 //-----------------------------------------------------------------------------
@@ -364,12 +470,12 @@ int main(void)
 
     // Setup UART0 baud rate
     setUart0BaudRate(19200, 40e6);
-    uint16_t speed = 0, DRV_Val = 0;
+    uint16_t DRV_Val = 0, distance = 0;
 
     while (true)
     {
         bool foo = 0;
-
+        uint32_t timeForDistanceDesired = 0;
         putsUart0("********************\n\n");
         putsUart0("Input:\n");
 
@@ -402,12 +508,38 @@ int main(void)
         // Validate command and minimum num of args provide by user
         // Add a command 'forward' 100% duty cycle
         // if no 'speed' is provided, then the default values are used
-        if (isCommand(&data, "forward", 1) | isCommand(&data, "forward", 0))
+        if (isCommand(&data, "forward", 0) | isCommand(&data, "forward", 1) | isCommand(&data, "foward", 2))
         {
+            leftWheelCount = rightWheelCount = 0;
+
             foo = true;
-            speed = (data.fieldCount == 2) ? getFieldInteger(&data, 1) : 1023;
-            setGen0Values(1024, 0, speed);
-            setGen1Values(1024, speed, 0);
+
+            speed = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 9988;
+            distance = (data.fieldCount == 3) ? getFieldInteger(&data, 2) : 0;
+
+            leftWheelGen1Val = rightWheelGen0Val = speedToPWM(speed);
+            if (data.fieldCount == 3)
+            {
+                timeForDistanceDesired = ((distance * 60 * 40e6) / speed) - ((DISTANCE_ADJUSTMENT_FACTOR * 40e6 * 60) / speed);
+                snprintf(str, sizeof(str), "Time for distance desired: %d\n", timeForDistanceDesired);
+                putsUart0(str);
+                TIMER3_TAILR_R = timeForDistanceDesired;
+                TIMER3_CTL_R |= TIMER_CTL_TAEN; // Enable timer 3 for desired distance
+                setGen0Values(1024, 0, rightWheelGen0Val);
+                setGen1Values(1024, leftWheelGen1Val, 0);
+                waitMicrosecond(100000);
+                driveStraightFoward2();
+            }
+            else
+            {
+                setGen0Values(1024, 0, rightWheelGen0Val);
+                setGen1Values(1024, leftWheelGen1Val, 0);
+                waitMicrosecond(100000);
+            }
+            driveStraightFoward2();
+
+            snprintf(str, sizeof(str), "In \"forward\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+            putsUart0(str);
         }
 
         // Add a  command 'reverse' 100% duty cycle
