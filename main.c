@@ -56,7 +56,17 @@ char str[40];
 #define L_WHEEL_DIAMETER 90           // 90.20 mm
 #define R_WHEEL_DIAMETER 91           // 90.75 mm
 #define BASE_DIAMETER 138             // 5 and 7/16 inches or 138.1 mm
+#define BASE_RADIUS 69                // 69.05 mm
 #define DISTANCE_ADJUSTMENT_FACTOR 40 // Overshoots by 80 mm
+#define PI_OVER_180 17453             // Approximation of pi/180 * 10e6
+#define SCALING_FACTOR 1000           // Scaling factor for angle calculations
+#define PMM_LOAD_VAL 1024
+#define MAX_PWM 1023
+#define MIN_PWM 0
+#define MAX_SPEED 9988
+#define MIN_SPEED 1624
+#define ANGLE_ADJUSTMENT_FACTOR_CW 30  // In degrees
+#define ANGLE_ADJUSTMENT_FACTOR_CCW 24 // In degrees
 
 // Port B masks
 #define M0PWM2_MASK 16
@@ -97,7 +107,7 @@ void initEdgeTrigInputs(void);
 void setGen0Values(uint16_t frequency, uint16_t x, uint16_t y);
 void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y);
 void driveStraightFoward(void);
-void driveStraightFoward2(void);
+void driveStragihtReverse(void);
 uint16_t absoluteValue(int16_t value);
 
 //-----------------------------------------------------------------------------
@@ -409,24 +419,7 @@ uint16_t speedToPWM(uint16_t speed)
 
 void driveStraightFoward(void)
 {
-    while (!(GPIO_PORTC_RIS_R & PHOTO_TR_MASK) || !(GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2))
-    {
-        // Right-wheel GPIO interrupt
-        if (!(GPIO_PORTC_RIS_R & PHOTO_TR_MASK))
-            rightWheelGen0Val++; // Speed up right wheel
-
-        // Left-wheel GPIO interrupt
-        if (!(GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2))
-            leftWheelGen1Val++; // Speed up left wheel
-
-        setGen0Values(1024, 0, rightWheelGen0Val);
-        setGen1Values(1024, leftWheelGen1Val, 0);
-    }
-}
-
-void driveStraightFoward2(void)
-{
-    while (absoluteValue(leftWheelCount - rightWheelCount) > 1)
+    while (absoluteValue(leftWheelCount - rightWheelCount) > 0)
     {
         if (rightWheelCount > leftWheelCount)
         {
@@ -440,6 +433,28 @@ void driveStraightFoward2(void)
         }
         setGen0Values(1024, 0, rightWheelGen0Val);
         setGen1Values(1024, leftWheelGen1Val, 0);
+        snprintf(str, sizeof(str), "Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+        putsUart0(str);
+        waitMicrosecond(100000);
+    }
+}
+
+void driveStraightReverse(void)
+{
+    while (absoluteValue(leftWheelCount - rightWheelCount) > 0)
+    {
+        if (rightWheelCount > leftWheelCount)
+        {
+            leftWheelGen1Val = leftWheelGen1Val >= 1023 ? speedToPWM(speed) : leftWheelGen1Val + 1;
+            rightWheelGen0Val--;
+        }
+        else if (leftWheelCount > rightWheelCount)
+        {
+            rightWheelGen0Val = rightWheelGen0Val >= 1023 ? speedToPWM(speed) : rightWheelGen0Val + 1;
+            leftWheelGen1Val--;
+        }
+        setGen0Values(1024, rightWheelGen0Val, 0);
+        setGen1Values(1024, 0, leftWheelGen1Val);
         snprintf(str, sizeof(str), "Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
         putsUart0(str);
         waitMicrosecond(50000);
@@ -470,11 +485,12 @@ int main(void)
 
     // Setup UART0 baud rate
     setUart0BaudRate(19200, 40e6);
-    uint16_t DRV_Val = 0, distance = 0;
+    uint16_t distance = 0, mmArcLength = 0;
+    uint8_t DRV_Val = 0, angle = 0;
 
     while (true)
     {
-        bool foo = 0;
+        bool validCommand = 0;
         uint32_t timeForDistanceDesired = 0;
         putsUart0("********************\n\n");
         putsUart0("Input:\n");
@@ -508,11 +524,11 @@ int main(void)
         // Validate command and minimum num of args provide by user
         // Add a command 'forward' 100% duty cycle
         // if no 'speed' is provided, then the default values are used
-        if (isCommand(&data, "forward", 0) | isCommand(&data, "forward", 1) | isCommand(&data, "foward", 2))
+        if (isCommand(&data, "forward", 0) | isCommand(&data, "forward", 1) | isCommand(&data, "forward", 2))
         {
             leftWheelCount = rightWheelCount = 0;
 
-            foo = true;
+            validCommand = true;
 
             speed = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 9988;
             distance = (data.fieldCount == 3) ? getFieldInteger(&data, 2) : 0;
@@ -521,70 +537,136 @@ int main(void)
             if (data.fieldCount == 3)
             {
                 timeForDistanceDesired = ((distance * 60 * 40e6) / speed) - ((DISTANCE_ADJUSTMENT_FACTOR * 40e6 * 60) / speed);
+
                 snprintf(str, sizeof(str), "Time for distance desired: %d\n", timeForDistanceDesired);
                 putsUart0(str);
+
                 TIMER3_TAILR_R = timeForDistanceDesired;
                 TIMER3_CTL_R |= TIMER_CTL_TAEN; // Enable timer 3 for desired distance
+
                 setGen0Values(1024, 0, rightWheelGen0Val);
                 setGen1Values(1024, leftWheelGen1Val, 0);
-                waitMicrosecond(100000);
-                driveStraightFoward2();
+
+                waitMicrosecond(200000); // 200 ms Let the motors start running and adjust speed  if needed
+
+                driveStraightFoward();
             }
             else
             {
                 setGen0Values(1024, 0, rightWheelGen0Val);
                 setGen1Values(1024, leftWheelGen1Val, 0);
-                waitMicrosecond(100000);
+                
+                waitMicrosecond(200000); // 200 ms Let the motors start running and adjust speed  if needed
+
+                driveStraightFoward();
             }
-            driveStraightFoward2();
 
             snprintf(str, sizeof(str), "In \"forward\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
             putsUart0(str);
         }
 
         // Add a  command 'reverse' 100% duty cycle
-        else if (isCommand(&data, "r", 1) | isCommand(&data, "reverse", 0))
+        else if (isCommand(&data, "reverse", 0) | isCommand(&data, "reverse", 1) | isCommand(&data, "reverse", 2))
         {
-            foo = true;
-            speed = (data.fieldCount == 2) ? getFieldInteger(&data, 1) : 1023;
-            setGen0Values(1024, speed, 0);
-            setGen1Values(1024, 0, speed);
+            leftWheelCount = rightWheelCount = 0;
+
+            validCommand = true;
+
+            speed = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 9988;
+            distance = (data.fieldCount == 3) ? getFieldInteger(&data, 2) : 0;
+
+            leftWheelGen1Val = rightWheelGen0Val = speedToPWM(speed);
+            if (data.fieldCount == 3)
+            {
+                timeForDistanceDesired = ((distance * 60 * 40e6) / speed) - ((DISTANCE_ADJUSTMENT_FACTOR * 40e6 * 60) / speed);
+
+                snprintf(str, sizeof(str), "Time for distance desired: %d\n", timeForDistanceDesired);
+                putsUart0(str);
+
+                TIMER3_TAILR_R = timeForDistanceDesired;
+                TIMER3_CTL_R |= TIMER_CTL_TAEN; // Enable timer 3 for desired distance
+
+                setGen0Values(1024, rightWheelGen0Val, 0);
+                setGen1Values(1024, 0, leftWheelGen1Val);
+
+                waitMicrosecond(200000);
+
+                driveStraightReverse();
+            }
+            else
+            {
+                setGen0Values(1024, rightWheelGen0Val, 0);
+                setGen1Values(1024, 0, leftWheelGen1Val);
+
+                waitMicrosecond(200000);
+
+                driveStraightReverse();
+            }
+
+            snprintf(str, sizeof(str), "In \"reverse\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+            putsUart0(str);
         }
 
         // Add a command 'stop' 0% duty cycle
         else if (isCommand(&data, "s", 0))
         {
-            foo = true;
+            validCommand = true;
             setGen0Values(1024, 0, 0);
             setGen1Values(1024, 0, 0);
         }
 
         // Add a command 'ccw' 100% duty cycle
-        else if (isCommand(&data, "ccw", 0))
+        else if (isCommand(&data, "cw", 0) | isCommand(&data, "cw", 1))
         {
-            foo = true;
-            setGen0Values(1024, 1023, 0);
-            setGen1Values(1024, 1023, 0);
+            validCommand = true;
+            angle = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 0;
+            if (data.fieldCount == 2)
+            {
+                mmArcLength = (absoluteValue(angle - ANGLE_ADJUSTMENT_FACTOR_CW) * PI_OVER_180 * BASE_RADIUS) / (SCALING_FACTOR * SCALING_FACTOR);
+                timeForDistanceDesired = ((mmArcLength * 60 * 40e6) / MAX_SPEED);
+                TIMER3_TAILR_R = timeForDistanceDesired;
+                TIMER3_CTL_R |= TIMER_CTL_TAEN; // Enable timer 3 for desired distance
+                setGen0Values(1024, 1023, 0);
+                setGen1Values(1024, 1023, 0);
+            }
+            else
+            {
+                setGen0Values(1024, 1023, 0);
+                setGen1Values(1024, 1023, 0);
+            }
         }
 
         // Add a command 'cw' 100% duty cycle
-        else if (isCommand(&data, "cw", 0))
+        else if (isCommand(&data, "ccw", 0) | isCommand(&data, "ccw", 1))
         {
-            foo = true;
-            setGen0Values(1024, 0, 1023);
-            setGen1Values(1024, 0, 1023);
+            validCommand = true;
+            angle = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 0;
+            if (data.fieldCount == 2)
+            {
+                mmArcLength = (absoluteValue(angle - ANGLE_ADJUSTMENT_FACTOR_CCW) * PI_OVER_180 * BASE_RADIUS) / (SCALING_FACTOR * SCALING_FACTOR);
+                timeForDistanceDesired = ((mmArcLength * 60 * 40e6) / MAX_SPEED);
+                TIMER3_TAILR_R = timeForDistanceDesired;
+                TIMER3_CTL_R |= TIMER_CTL_TAEN; // Enable timer 3 for desired distance
+                setGen0Values(1024, 0, 1023);
+                setGen1Values(1024, 0, 1023);
+            }
+            else
+            {
+                setGen0Values(1024, 0, 1023);
+                setGen1Values(1024, 0, 1023);
+            }
         }
 
         // Command 'DRV' to turn off/on the DRV8833
         else if (isCommand(&data, "drv", 1))
         {
-            foo = true;
+            validCommand = true;
             DRV_Val = getFieldInteger(&data, 1);
             DRV_Val == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
             DRV_SLEEP = DRV_Val;
         }
 
-        foo ? putsUart0("Valid command!\n\n") : putsUart0("Invalid command!\n\n");
+        validCommand ? putsUart0("Valid command!\n\n") : putsUart0("Invalid command!\n\n");
         putsUart0("********************");
 
         // TODO: Ensure consistency with uppercase and lower case commands
