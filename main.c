@@ -265,15 +265,6 @@ void initEdgeTrigInputs(void)
     TIMER3_IMR_R = TIMER_IMR_TATOIM;
     NVIC_EN1_R = 1 << (INT_TIMER3A - 16 - 32);
 
-    // WTIMER0_CTL_R &= ~TIMER_CTL_TAEN;                          // Turn-off counter before reconfiguring
-    // WTIMER0_CFG_R = 4;                                         // configure as 32-bit counter (A only)
-    // WTIMER0_TAMR_R |= TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACDIR; // configure for edge count mode, count up
-    // WTIMER0_CTL_R |= TIMER_CTL_TAEVENT_BOTH;                   // count both edges
-    // WTIMER0_IMR_R |= TIMER_IMR_CAMIM;                          // Capture mode match interrupt
-    // WTIMER0_TAMATCHR_R = 39;                                   // Sets the upper bound for the timeout event
-    // WTIMER0_TAV_R = 0;                                         // zero counter for first period
-    // NVIC_EN2_R = 1 << (INT_WTIMER0A - 16 - 64);                // turn-on interrupt 94 (WTIMER0A)
-
     // 25 ms one-shot timer configuration for PE0
     TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
     TIMER4_CFG_R |= TIMER_CFG_32_BIT_TIMER;
@@ -299,24 +290,6 @@ void rightWheelEdgeISR(void)
         GPIO_PORTC_ICR_R |= PHOTO_TR_MASK; // Clearing interrupt
     }
 }
-
-/*
-void wideTimer0ISR(void)
-{
-    // RED_LED ^= 1;
-    uint32_t time = TIMER3_TAV_R;
-    // snprintf(str, sizeof(str), "Timer 3: %d\n", time);
-    // putsUart0(str);
-
-    WTIMER0_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
-    WTIMER0_TAV_R = 0;
-
-    // TIMER3_CTL_R &= ~TIMER_CTL_TAEN; // Disable timer
-    TIMER3_TAV_R = 0;
-
-    WTIMER0_ICR_R = TIMER_ICR_CAMCINT; // Clearing one-shot timer interrupt
-}
-*/
 
 void timer3ISR(void)
 {
@@ -433,8 +406,11 @@ void driveStraightFoward(void)
         }
         setGen0Values(1024, 0, rightWheelGen0Val);
         setGen1Values(1024, leftWheelGen1Val, 0);
+
         snprintf(str, sizeof(str), "Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+
         putsUart0(str);
+
         waitMicrosecond(100000);
     }
 }
@@ -455,8 +431,11 @@ void driveStraightReverse(void)
         }
         setGen0Values(1024, rightWheelGen0Val, 0);
         setGen1Values(1024, 0, leftWheelGen1Val);
+
         snprintf(str, sizeof(str), "Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+
         putsUart0(str);
+
         waitMicrosecond(50000);
     }
 }
@@ -555,7 +534,7 @@ int main(void)
             {
                 setGen0Values(1024, 0, rightWheelGen0Val);
                 setGen1Values(1024, leftWheelGen1Val, 0);
-                
+
                 waitMicrosecond(200000); // 200 ms Let the motors start running and adjust speed  if needed
 
                 driveStraightFoward();
@@ -641,12 +620,16 @@ int main(void)
         {
             validCommand = true;
             angle = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 0;
+
             if (data.fieldCount == 2)
             {
                 mmArcLength = (absoluteValue(angle - ANGLE_ADJUSTMENT_FACTOR_CCW) * PI_OVER_180 * BASE_RADIUS) / (SCALING_FACTOR * SCALING_FACTOR);
+
                 timeForDistanceDesired = ((mmArcLength * 60 * 40e6) / MAX_SPEED);
+
                 TIMER3_TAILR_R = timeForDistanceDesired;
                 TIMER3_CTL_R |= TIMER_CTL_TAEN; // Enable timer 3 for desired distance
+
                 setGen0Values(1024, 0, 1023);
                 setGen1Values(1024, 0, 1023);
             }
@@ -661,8 +644,11 @@ int main(void)
         else if (isCommand(&data, "drv", 1))
         {
             validCommand = true;
+
             DRV_Val = getFieldInteger(&data, 1);
+
             DRV_Val == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
+
             DRV_SLEEP = DRV_Val;
         }
 
