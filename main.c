@@ -51,6 +51,20 @@
 volatile uint16_t leftWheelCount = 0, rightWheelCount = 0;
 volatile uint16_t rightWheelGen0Val = 0, leftWheelGen1Val = 0, speed = 0;
 char str[40];
+/*
+    For the TSOP38338 IR Receiver
+    - One time constant is 562.5 microseconds
+    - '0' bit is two time constants (2T) 1125 microseconds
+    - '1' bit is four time constants (4T) 2250 microseconds
+
+*/
+
+// NEC IR Constants
+#define LOGIC_ONE 2250       // 2250 microseconds
+#define LOGIC_ZERO 1125      // 1125 microseconds
+#define PREAMBLE 13500       // 13500 microseconds
+#define PREAMBLE_LOW 520000  // 520000 clock cycles (13 ms)
+#define PREAMBLE_HIGH 560000 // 560000 clock cycles (14 ms)
 
 // Constants
 #define L_WHEEL_DIAMETER 90           // 90.20 mm
@@ -60,9 +74,9 @@ char str[40];
 #define DISTANCE_ADJUSTMENT_FACTOR 40 // Overshoots by 80 mm
 #define PI_OVER_180 17453             // Approximation of pi/180 * 10e6
 #define SCALING_FACTOR 1000           // Scaling factor for angle calculations
-#define PMM_LOAD_VAL 1024
-#define MAX_PWM 1023
-#define MIN_PWM 0
+#define PWM_LOAD_VAL 1024
+#define MAX_PWM_LOAD 1023
+#define MIN_PWM_LOAD 0
 #define MAX_SPEED 9988
 #define MIN_SPEED 1624
 #define ANGLE_ADJUSTMENT_FACTOR_CW 30  // In degrees
@@ -81,6 +95,7 @@ char str[40];
 
 // Port D masks
 #define DRV_SLEEP_MASK 64
+#define TSOP_38338_GPI_MASK 4
 
 // Port D bitband aliases
 #define DRV_SLEEP (*((volatile uint32_t *)(0x42000000 + (0x400073FC - 0x40000000) * 32 + 6 * 4)))
@@ -104,6 +119,7 @@ void initPWM(void);
 void initDRVSleep(void);
 void initLEDs(void);
 void initEdgeTrigInputs(void);
+void initTSOP38338(void);
 void setGen0Values(uint16_t frequency, uint16_t x, uint16_t y);
 void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y);
 void driveStraightFoward(void);
@@ -136,8 +152,70 @@ void initHw()
     // Enable clock for Timer
     SYSCTL_RCGCTIMER_R |= SYSCTL_RCGCTIMER_R5 | SYSCTL_RCGCTIMER_R4 | SYSCTL_RCGCTIMER_R3 | SYSCTL_RCGCTIMER_R2;
     // Enable clock for Wide Timer 0
-    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0;
+    SYSCTL_RCGCWTIMER_R |= SYSCTL_RCGCWTIMER_R0 | SYSCTL_RCGCWTIMER_R3;
     _delay_cycles(3);
+}
+// Initialize TSOP38338
+// Configure as input edge time mode timer
+void initTSOP38338(void)
+{
+    // Configure GPIO for TSOP38338
+    GPIO_PORTD_DIR_R &= ~TSOP_38338_GPI_MASK; // pin 2 is an input
+    GPIO_PORTD_DEN_R |= TSOP_38338_GPI_MASK;  // enable input
+
+    GPIO_PORTD_AFSEL_R |= TSOP_38338_GPI_MASK; // Enable alternate function
+    GPIO_PORTD_PCTL_R &= ~GPIO_PCTL_PD2_M;     // Clear bit/pin 0
+    GPIO_PORTD_PCTL_R |= GPIO_PCTL_PD2_WT3CCP0;
+
+    WTIMER3_CTL_R &= ~TIMER_CTL_TAEN;                                            // Turn-off counter before reconfiguring
+    WTIMER3_CFG_R = 0x4;                                                         // configure as 64 bit timer (A+B)
+    WTIMER3_CTL_R = TIMER_CTL_TAEVENT_NEG;                                       // Set for negative edge event
+    WTIMER3_TAMR_R = TIMER_TAMR_TACDIR | TIMER_TAMR_TAMR_CAP | TIMER_TAMR_TACMR; //  count up, configure for capture mode, configure for edge time mode
+    WTIMER3_IMR_R = TIMER_IMR_CAEIM;                                             // Enable capture interrupt
+    NVIC_EN3_R = 1 << (INT_WTIMER3A - 16 - 96);                                  // Enable interrupt 112 in NVIC
+    WTIMER3_TAV_R = 0;                                                           // Zero counter for first period
+    WTIMER3_CTL_R |= TIMER_CTL_TAEN;                                             // Enable wide timer 3A
+}
+
+// Receive the codes from remote control
+void stateMachineWTimer3ISR(void)
+{
+    /*
+        On the first falling edge of the TSOP38338, the timer will start counting
+        The timer will stop counting on the next falling edge.
+        This should be our preamble
+    */
+    static bool firstEdge = true;
+    static uint32_t remoteControlCode = 0;
+    static uint8_t bitCount = 0;
+    if ((WTIMER3_RIS_R & TIMER_RIS_CAERIS) && firstEdge)
+    {
+        firstEdge = false;
+        WTIMER3_ICR_R = TIMER_ICR_CAECINT; // Clear the interrupt
+        WTIMER3_TAV_R = 0;                 // Zero the counter
+        snprintf(str, sizeof(str), "Timer start value: %d\n", WTIMER3_TAV_R);
+        putsUart0(str);
+    }
+
+    // Idle state and preable state
+    if (WTIMER3_TAV_R > PREAMBLE_LOW && WTIMER3_TAV_R < PREAMBLE_HIGH)
+    {
+        // Once I am in I can move on to the Receive state
+
+        snprintf(str, sizeof(str), "Preamble: %d\n", WTIMER3_TAV_R);
+        putsUart0(str);
+        WTIMER3_ICR_R = TIMER_ICR_CAECINT; // Clear the interrupt
+        WTIMER3_CTL_R &= ~TIMER_CTL_TAEN;  // Disable the timer
+        WTIMER3_TAV_R = 0;                 // Zero the counter
+    }
+
+    /*
+    snprintf(str, sizeof(str), "Timer start value: %d %d \n", WTIMER3_TAV_R,WTIMER3_TAR_R);
+    putsUart0(str);
+    WTIMER3_ICR_R = TIMER_ICR_CAECINT; // Clear the interrupt
+    WTIMER3_CTL_R &= ~TIMER_CTL_TAEN;  // Disable the timer
+    WTIMER3_TAV_R = 0;                 // Zero the counter
+    */
 }
 
 void initPWM(void)
@@ -280,7 +358,7 @@ void rightWheelEdgeISR(void)
     rightWheelCount++;
     if (GPIO_PORTC_RIS_R & PHOTO_TR_MASK)
     {
-        GREEN_LED ^= 1;
+        // GREEN_LED ^= 1;
         GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK; // Interrupt Disabled Mask by clearing IME field.
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
@@ -297,7 +375,7 @@ void timer3ISR(void)
     TIMER3_ICR_R = TIMER_ICR_TATOCINT; // Clearing one-shot timer interrupt
     setGen0Values(1024, 0, 0);
     setGen1Values(1024, 0, 0);
-    RED_LED ^= 1;
+    // RED_LED ^= 1;
 }
 
 // PE0 Left wheel ISR
@@ -306,7 +384,7 @@ void leftWheelEdgeISR(void)
     leftWheelCount++;
     if (GPIO_PORTE_RIS_R & PHOTO_TR_MASK_2)
     {
-        BLUE_LED ^= 1;
+        // BLUE_LED ^= 1;
         GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
@@ -351,7 +429,6 @@ uint16_t speedToPWM(uint16_t speed)
     /*
         The max speed is 9988 mm/min
         The lowest speed is 1624 mm/min
-        Don't worry for no speed val provided
     */
 
     if (speed == 0)
@@ -461,6 +538,7 @@ int main(void)
     initLEDs();
     initEdgeTrigInputs();
     initUart0();
+    initTSOP38338();
 
     // Setup UART0 baud rate
     setUart0BaudRate(19200, 40e6);
