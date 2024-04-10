@@ -50,6 +50,9 @@
 // Global variables
 volatile uint16_t leftWheelCount = 0, rightWheelCount = 0;
 volatile uint16_t rightWheelGen0Val = 0, leftWheelGen1Val = 0, speed = 0;
+uint32_t remoteButton = 0;
+bool noRemoteCommand = true;
+
 char str[40];
 /*
     For the TSOP38338 IR Receiver
@@ -60,11 +63,19 @@ char str[40];
 */
 
 // NEC IR Constants
-#define LOGIC_ONE 2250       // 2250 microseconds
-#define LOGIC_ZERO 1125      // 1125 microseconds
-#define PREAMBLE 13500       // 13500 microseconds
-#define PREAMBLE_LOW 520000  // 520000 clock cycles (13 ms)
-#define PREAMBLE_HIGH 560000 // 560000 clock cycles (14 ms)
+#define LOGIC_ONE_MIN 81000 // 81,000 clock cycles (2.025 ms) 10% tolerance
+#define LOGIC_ONE 90000     // 90,000 clock cycles (2.25 ms)
+#define LOGIC_ONE_MAX 99000 // 99,000 clock cycles (2.475 ms) 10% tolerance
+
+#define LOGIC_ZERO_MIN 40500 // 40,500 clock cycles (1.0125 ms) 10% tolerance
+#define LOGIC_ZERO 45000     // 45,000 clock cycles (1.125 ms)
+#define LOGIC_ZERO_MAX 49500 // 49,500 clock cycles (1.2375 ms) 10% tolerance
+
+#define PREAMBLE_LOW 520000       // 520000 clock cycles (13 ms)
+#define PREAMBLE 13500            // 13500 clock cycles (13.5 ms)
+#define PREAMBLE_HIGH 560000      // 560000 clock cycles (14 ms)
+
+#define REMOTE_CTL_ADDRESS 0x20DF // Address of the remote control
 
 // Constants
 #define L_WHEEL_DIAMETER 90           // 90.20 mm
@@ -113,6 +124,13 @@ char str[40];
 #define BLUE_LED_MASK 4
 #define GREEN_LED_MASK 8
 
+typedef enum
+{
+    IR_PULSE_ZERO = 0,
+    IR_PULSE_ONE,
+    IR_PULSE_ERROR
+} IRPulseType;
+
 // Function prototypes
 uint16_t speedToPWM(uint16_t speed);
 void initPWM(void);
@@ -125,6 +143,7 @@ void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y);
 void driveStraightFoward(void);
 void driveStragihtReverse(void);
 uint16_t absoluteValue(int16_t value);
+IRPulseType decodeIRPulse(uint32_t pulseWidth);
 
 //-----------------------------------------------------------------------------
 // Subroutines
@@ -185,37 +204,74 @@ void stateMachineWTimer3ISR(void)
         The timer will stop counting on the next falling edge.
         This should be our preamble
     */
-    static bool firstEdge = true;
-    static uint32_t remoteControlCode = 0;
+    static uint32_t lastTimeStamp = 0, remoteButtonISR = 0;
     static uint8_t bitCount = 0;
-    if ((WTIMER3_RIS_R & TIMER_RIS_CAERIS) && firstEdge)
+    uint32_t pulseWidth = 0, timeStamp = 0;
+    IRPulseType pulseType;
+
+    // Our current time stamp
+    timeStamp = WTIMER3_TAV_R;
+
+    // Handle wrap around
+    if (pulseWidth < lastTimeStamp)
     {
-        firstEdge = false;
-        WTIMER3_ICR_R = TIMER_ICR_CAECINT; // Clear the interrupt
-        WTIMER3_TAV_R = 0;                 // Zero the counter
-        snprintf(str, sizeof(str), "Timer start value: %d\n", WTIMER3_TAV_R);
-        putsUart0(str);
+        pulseWidth = (UINT32_MAX - lastTimeStamp) + timeStamp;
+    }
+    else
+    {
+        pulseWidth = timeStamp - lastTimeStamp;
     }
 
-    // Idle state and preable state
-    if (WTIMER3_TAV_R > PREAMBLE_LOW && WTIMER3_TAV_R < PREAMBLE_HIGH)
+    lastTimeStamp = timeStamp;
+
+    pulseType = decodeIRPulse(pulseWidth);
+
+    // Check if the pulse width is within the range of the preamble
+    if (pulseWidth < PREAMBLE_LOW && pulseWidth > PREAMBLE_HIGH)
     {
-        // Once I am in I can move on to the Receive state
-
-        snprintf(str, sizeof(str), "Preamble: %d\n", WTIMER3_TAV_R);
-        putsUart0(str);
-        WTIMER3_ICR_R = TIMER_ICR_CAECINT; // Clear the interrupt
-        WTIMER3_CTL_R &= ~TIMER_CTL_TAEN;  // Disable the timer
-        WTIMER3_TAV_R = 0;                 // Zero the counter
+        remoteButtonISR = 0;
+        bitCount = 0;
     }
-
-    /*
-    snprintf(str, sizeof(str), "Timer start value: %d %d \n", WTIMER3_TAV_R,WTIMER3_TAR_R);
-    putsUart0(str);
+    else if (pulseType != IR_PULSE_ERROR)
+    {
+        remoteButtonISR = (remoteButtonISR << 1) | (pulseType == IR_PULSE_ONE ? 1 : 0);
+        bitCount++;
+        if (bitCount == 32)
+        {
+            // // Check if the remoteButton is from the remote control
+            // if((remoteButton & 0xFFFF) == REMOTE_CTL_ADDRESS)
+            // {
+            //     // Check if the remoteButton is the correct command
+            //     if((remoteButton >> 16) == 0x20DF)
+            //     {
+            //         // Command received
+            //     }
+            // }
+            snprintf(str, sizeof(str), "remoteButton: %x\n", remoteButtonISR);
+            putsUart0(str);
+            remoteButton = remoteButtonISR;
+            noRemoteCommand = false;
+            remoteButtonISR = 0;
+            bitCount = 0;
+        }
+    }
     WTIMER3_ICR_R = TIMER_ICR_CAECINT; // Clear the interrupt
-    WTIMER3_CTL_R &= ~TIMER_CTL_TAEN;  // Disable the timer
-    WTIMER3_TAV_R = 0;                 // Zero the counter
-    */
+}
+
+IRPulseType decodeIRPulse(uint32_t pulseWidth)
+{
+    if (pulseWidth >= LOGIC_ZERO_MIN && pulseWidth <= LOGIC_ZERO_MAX)
+    {
+        return IR_PULSE_ZERO;
+    }
+    else if (pulseWidth >= LOGIC_ONE_MIN && pulseWidth <= LOGIC_ONE_MAX)
+    {
+        return IR_PULSE_ONE;
+    }
+    else
+    {
+        return IR_PULSE_ERROR;
+    }
 }
 
 void initPWM(void)
@@ -302,18 +358,15 @@ void initEdgeTrigInputs(void)
     GPIO_PORTC_IS_R &= ~(PHOTO_TR_MASK); // Clear bit/pin 4 in order to detect edges
     GPIO_PORTC_IBE_R |= (PHOTO_TR_MASK); // Detect both edges
     // GPIO_PORTC_IEV_R &= ~(PHOTO_TR_MASK);  // Clear bit/pin 4 to detect falling edges
-    GPIO_PORTC_ICR_R |= (PHOTO_TR_MASK);   // Setting clears bit in RIS and MIS
-    GPIO_PORTC_IM_R |= (PHOTO_TR_MASK);    // Interrupt Enabled. Setting a bit int passes to controller
-    GPIO_PORTC_AFSEL_R |= PHOTO_TR_MASK;   // Enable alternate function
-    GPIO_PORTC_PCTL_R &= ~GPIO_PCTL_PC4_M; // Clear bit/pin 4
-    GPIO_PORTC_PCTL_R |= GPIO_PCTL_PC4_WT0CCP0;
+    GPIO_PORTC_ICR_R |= (PHOTO_TR_MASK); // Setting clears bit in RIS and MIS
+    GPIO_PORTC_IM_R |= (PHOTO_TR_MASK);  // Interrupt Enabled. Setting a bit int passes to controller
 
     NVIC_EN0_R = 1 << (INT_GPIOC - 16);
 
+    /***********************************************/
     // Configure PE0 to be an input
     GPIO_PORTE_DIR_R &= ~(PHOTO_TR_MASK_2);
     GPIO_PORTE_DEN_R |= (PHOTO_TR_MASK_2);
-
     // Configure edge-triggered interrupt input for PE0
     GPIO_PORTE_IM_R &= ~PHOTO_TR_MASK_2; // Mask by clearing IME field. Interrupt Disabled
     GPIO_PORTE_IS_R &= ~PHOTO_TR_MASK_2; // Clear bit/pin 0 in order to detect edges
@@ -332,8 +385,6 @@ void initEdgeTrigInputs(void)
     TIMER5_IMR_R = TIMER_IMR_TATOIM;
     NVIC_EN2_R = 1 << (INT_TIMER5A - 16 - 64);
 
-    // Input Edge-Count and Capture Mode Timer for PC4
-    // There are 20 holes in wheel
     // Will use this to determine speed of wheel
     // Will determine the number of clock cycles for wheel to make a full rotation
 
@@ -362,8 +413,8 @@ void rightWheelEdgeISR(void)
         GPIO_PORTC_IM_R &= ~PHOTO_TR_MASK; // Interrupt Disabled Mask by clearing IME field.
         /* 3/17/24 Have to turn off edge trigger input by the IM register */
 
-        TIMER5_CTL_R |= TIMER_CTL_TAEN;  // Enable 25 ms one-shot timer
-        WTIMER0_CTL_R |= TIMER_CTL_TAEN; // turn-on edge counter PC4
+        TIMER5_CTL_R |= TIMER_CTL_TAEN; // Enable 25 ms one-shot timer
+        // WTIMER0_CTL_R |= TIMER_CTL_TAEN; // turn-on edge counter PC4
         // TIMER3_CTL_R |= TIMER_CTL_TAEN;    // Enable timer 3 for one revolution
         GPIO_PORTC_ICR_R |= PHOTO_TR_MASK; // Clearing interrupt
     }
@@ -549,20 +600,43 @@ int main(void)
     {
         bool validCommand = 0;
         uint32_t timeForDistanceDesired = 0;
-        putsUart0("********************\n\n");
-        putsUart0("Input:\n");
 
-        // Get the string from the user
-        getsUart0(&data);
+        // putsUart0("********************\n\n");
+        // putsUart0("Input:\n");
+        // getsUart0(&data);
+        // putsUart0("Output:\n");
+        // putsUart0(data.buffer);
+        // putcUart0('\n');
 
-        // Echo back to the user of the TTY interface for testing
+        // if (strCmp(data.buffer, "remote mode\xd") | )
+        // {
+        // putsUart0("Debugging IR Receiver\n");
+        //     clearStruct(&data);
+        // }
+        // else
+        // {
 
-        putsUart0("Output:\n");
-        putsUart0(data.buffer);
-        putcUart0('\n');
+        //     putsUart0("********************\n\n");
+        //     putsUart0("Normal Mode Input:\n");
 
-        // Parse fields
-        parseFields(&data);
+        //     // Get the string from the user
+        //     getsUart0(&data);
+
+        //     // Echo back to the user of the TTY interface for testing
+        //     putsUart0("Output:\n");
+        //     putsUart0(data.buffer);
+        //     putcUart0('\n');
+
+        //     // Parse fields
+        //     parseFields(&data);
+        //     noRemoteCommand = false;
+        // }
+        putsUart0("\nDebugging IR Receiver\n");
+
+        while (noRemoteCommand)
+        {
+            // Wait for remote command
+        }
 
 #ifdef DEBUG
         uint8_t i = 0;
@@ -581,7 +655,7 @@ int main(void)
         // Validate command and minimum num of args provide by user
         // Add a command 'forward' 100% duty cycle
         // if no 'speed' is provided, then the default values are used
-        if (isCommand(&data, "forward", 0) | isCommand(&data, "forward", 1) | isCommand(&data, "forward", 2))
+        if (isCommand(&data, "forward", 0) | isCommand(&data, "forward", 1) | isCommand(&data, "forward", 2) | (remoteButton == 0x20df02fd))
         {
             leftWheelCount = rightWheelCount = 0;
 
@@ -618,12 +692,13 @@ int main(void)
                 driveStraightFoward();
             }
 
-            snprintf(str, sizeof(str), "In \"forward\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
-            putsUart0(str);
+            // snprintf(str, sizeof(str), "In \"forward\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+            // putsUart0(str);
+            putsUart0("Driving Forward\n");
         }
 
         // Add a  command 'reverse' 100% duty cycle
-        else if (isCommand(&data, "reverse", 0) | isCommand(&data, "reverse", 1) | isCommand(&data, "reverse", 2))
+        else if (isCommand(&data, "reverse", 0) | isCommand(&data, "reverse", 1) | isCommand(&data, "reverse", 2) | (remoteButton == 0x20df827d))
         {
             leftWheelCount = rightWheelCount = 0;
 
@@ -660,20 +735,22 @@ int main(void)
                 driveStraightReverse();
             }
 
-            snprintf(str, sizeof(str), "In \"reverse\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
-            putsUart0(str);
+            // snprintf(str, sizeof(str), "In \"reverse\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
+            // putsUart0(str);
+            putsUart0("Driving Reverse\n");
         }
 
         // Add a command 'stop' 0% duty cycle
-        else if (isCommand(&data, "s", 0))
+        else if (isCommand(&data, "s", 0) | (remoteButton == 0x20dfda25))
         {
             validCommand = true;
             setGen0Values(1024, 0, 0);
             setGen1Values(1024, 0, 0);
+            putsUart0("Stopping\n");
         }
 
         // Add a command 'ccw' 100% duty cycle
-        else if (isCommand(&data, "cw", 0) | isCommand(&data, "cw", 1))
+        else if (isCommand(&data, "cw", 0) | isCommand(&data, "cw", 1) | (remoteButton == 0x20df609f))
         {
             validCommand = true;
             angle = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 0;
@@ -691,10 +768,11 @@ int main(void)
                 setGen0Values(1024, 1023, 0);
                 setGen1Values(1024, 1023, 0);
             }
+            putsUart0("Turning CW\n");
         }
 
         // Add a command 'cw' 100% duty cycle
-        else if (isCommand(&data, "ccw", 0) | isCommand(&data, "ccw", 1))
+        else if (isCommand(&data, "ccw", 0) | isCommand(&data, "ccw", 1) | (remoteButton == 0x20dfe01f))
         {
             validCommand = true;
             angle = (data.fieldCount > 1) ? getFieldInteger(&data, 1) : 0;
@@ -716,25 +794,27 @@ int main(void)
                 setGen0Values(1024, 0, 1023);
                 setGen1Values(1024, 0, 1023);
             }
+            putsUart0("Turning CCW\n");
         }
 
         // Command 'DRV' to turn off/on the DRV8833
-        else if (isCommand(&data, "drv", 1))
+        else if (isCommand(&data, "drv", 1) | (remoteButton == 0x20df10ef))
         {
             validCommand = true;
 
-            DRV_Val = getFieldInteger(&data, 1);
+            // DRV_Val = getFieldInteger(&data, 1);
 
-            DRV_Val == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
-
+            // DRV_Val == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
+            DRV_Val ^= 1;
             DRV_SLEEP = DRV_Val;
+            DRV_Val == 1 ? putsUart0("Turning on DRV8833\n") : putsUart0("Turning off DRV8833\n");
         }
 
         validCommand ? putsUart0("Valid command!\n\n") : putsUart0("Invalid command!\n\n");
         putsUart0("********************");
 
         // TODO: Ensure consistency with uppercase and lower case commands
-
         clearStruct(&data);
+        noRemoteCommand = true;
     }
 }
