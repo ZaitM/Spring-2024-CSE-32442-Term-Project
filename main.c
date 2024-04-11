@@ -49,7 +49,6 @@
 
 // Global variables
 volatile uint16_t leftWheelCount = 0, rightWheelCount = 0;
-volatile uint16_t rightWheelGen0Val = 0, leftWheelGen1Val = 0, speed = 0;
 uint32_t remoteButton = 0;
 bool noRemoteCommand = true;
 
@@ -71,9 +70,9 @@ char str[40];
 #define LOGIC_ZERO 45000     // 45,000 clock cycles (1.125 ms)
 #define LOGIC_ZERO_MAX 49500 // 49,500 clock cycles (1.2375 ms) 10% tolerance
 
-#define PREAMBLE_LOW 520000       // 520000 clock cycles (13 ms)
-#define PREAMBLE 13500            // 13500 clock cycles (13.5 ms)
-#define PREAMBLE_HIGH 560000      // 560000 clock cycles (14 ms)
+#define PREAMBLE_LOW 520000  // 520000 clock cycles (13 ms)
+#define PREAMBLE 13500       // 13500 clock cycles (13.5 ms)
+#define PREAMBLE_HIGH 560000 // 560000 clock cycles (14 ms)
 
 #define REMOTE_CTL_ADDRESS 0x20DF // Address of the remote control
 
@@ -140,8 +139,8 @@ void initEdgeTrigInputs(void);
 void initTSOP38338(void);
 void setGen0Values(uint16_t frequency, uint16_t x, uint16_t y);
 void setGen1Values(uint16_t frequency, uint16_t x, uint16_t y);
-void driveStraightFoward(void);
-void driveStragihtReverse(void);
+void driveStraightFoward(uint16_t speed, uint16_t leftWheelGen1Val, uint16_t rightWheelGen0Val);
+void driveStraightReverse(uint16_t speed, uint16_t leftWheelGen1Val, uint16_t rightWheelGen0Val);
 uint16_t absoluteValue(int16_t value);
 IRPulseType decodeIRPulse(uint32_t pulseWidth);
 
@@ -518,7 +517,7 @@ uint16_t speedToPWM(uint16_t speed)
         return 1023;
 }
 
-void driveStraightFoward(void)
+void driveStraightFoward(uint16_t speed, uint16_t leftWheelGen1Val, uint16_t rightWheelGen0Val)
 {
     while (absoluteValue(leftWheelCount - rightWheelCount) > 0)
     {
@@ -543,7 +542,7 @@ void driveStraightFoward(void)
     }
 }
 
-void driveStraightReverse(void)
+void driveStraightReverse(uint16_t speed, uint16_t leftWheelGen1Val, uint16_t rightWheelGen0Val)
 {
     while (absoluteValue(leftWheelCount - rightWheelCount) > 0)
     {
@@ -599,7 +598,11 @@ int main(void)
     while (true)
     {
         bool validCommand = 0;
+
         uint32_t timeForDistanceDesired = 0;
+
+        uint16_t leftWheelGen1Val = 0, rightWheelGen0Val = 0;
+        uint16_t speed = 0;
 
         // putsUart0("********************\n\n");
         // putsUart0("Input:\n");
@@ -680,7 +683,7 @@ int main(void)
 
                 waitMicrosecond(200000); // 200 ms Let the motors start running and adjust speed  if needed
 
-                driveStraightFoward();
+                driveStraightFoward(speed, leftWheelGen1Val, rightWheelGen0Val);
             }
             else
             {
@@ -689,7 +692,7 @@ int main(void)
 
                 waitMicrosecond(200000); // 200 ms Let the motors start running and adjust speed  if needed
 
-                driveStraightFoward();
+                driveStraightFoward(speed, leftWheelGen1Val, rightWheelGen0Val);
             }
 
             // snprintf(str, sizeof(str), "In \"forward\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
@@ -723,7 +726,7 @@ int main(void)
 
                 waitMicrosecond(200000);
 
-                driveStraightReverse();
+                driveStraightReverse(speed, leftWheelGen1Val, rightWheelGen0Val);
             }
             else
             {
@@ -732,7 +735,7 @@ int main(void)
 
                 waitMicrosecond(200000);
 
-                driveStraightReverse();
+                driveStraightReverse(speed, leftWheelGen1Val, rightWheelGen0Val);
             }
 
             // snprintf(str, sizeof(str), "In \"reverse\" Left: %d, Right: %d\n", leftWheelCount, rightWheelCount);
