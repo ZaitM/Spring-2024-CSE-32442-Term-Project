@@ -65,6 +65,8 @@ extern void oneShotISR2(void);
 
 extern void timer3ISR(void);
 
+extern void stateMachineWTimer3ISR(void);
+
 
 //*****************************************************************************
 //
@@ -193,7 +195,7 @@ void (* const g_pfnVectors[])(void) =
     IntDefaultHandler,                      // Wide Timer 1 subtimer B
     IntDefaultHandler,                      // Wide Timer 2 subtimer A
     IntDefaultHandler,                      // Wide Timer 2 subtimer B
-    IntDefaultHandler,                      // Wide Timer 3 subtimer A
+    stateMachineWTimer3ISR,                      // Wide Timer 3 subtimer A
     IntDefaultHandler,                      // Wide Timer 3 subtimer B
     IntDefaultHandler,                      // Wide Timer 4 subtimer A
     IntDefaultHandler,                      // Wide Timer 4 subtimer B
